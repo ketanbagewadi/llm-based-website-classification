@@ -1,173 +1,159 @@
-# Domain Classification Pipeline
+# Domain Review Dashboard
 
-Local LLM-based website/domain classifier. Reads daily "uncategorized query" CSVs
-straight from a local folder, merges/dedupes them, fetches each domain's homepage
-(with subdomain fallback), classifies it with a local Llama 3.1 8B GGUF model, and
-writes results into a SQLite DB.
+Flask app for reviewing/verifying LLM-classified domains (login, dashboard with
+pagination/search, add/edit/verify/discard domains) and — optionally — pushing
+verified domains to a Git repo of category files.
 
-> **Note:** the previous SSH download step has been removed. The pipeline now reads
-> CSVs directly from a local folder (`INPUT_DIR`) — point that folder at wherever
-> your CSVs already land (a mounted network share, a sync job, another script's
-> output directory, etc.).
+## What changed from your original code
 
----
+- **Git push is now optional.** It's controlled by a `GIT_ENABLED` env var
+  (defaults to `false`). The `GitPython` import only happens if `GIT_ENABLED=true`,
+  so the app runs fine without `GitPython` installed and without a Git repo set
+  up at all. Clicking "Push to Git" while it's disabled just returns a clear
+  "not enabled yet" message instead of crashing.
+- **`GIT_REPO_PATH` is now read from an env var** (falls back to your original
+  `/home/ketan/domaindb` if unset) instead of being hardcoded.
+- **Passwords are now hashed** (`werkzeug.security.generate_password_hash` /
+  `check_password_hash`) instead of stored and compared in plain text. See the
+  note at the bottom — this means any old users in an existing `site.db` won't
+  be able to log in until they re-register.
+- **`dashboard.html`'s inline CSS/JS were split out** into
+  `static/css/dashboard.css` and `static/js/dashboard.js`, so the template
+  itself is ~320 lines instead of ~1,690. Behavior is identical — the one
+  Jinja expression the JS needed (`push_to_git`'s URL) is now passed in via a
+  small `window.APP_URLS` object set inline in the template.
+- Everything else (routes, models, forms, categories list, dashboard logic,
+  modals) is unchanged.
 
-## 1. Prerequisites
+## Directory structure
 
-- Python 3.10+
-- An NVIDIA GPU + CUDA drivers if you want GPU inference (CPU also works, just slower)
-- A folder that already receives the daily CSV exports (the ones with `query` and
-  `category` columns)
-- A `site.db` SQLite database created by the companion Flask app (`app.py`), with
-  `dom`, `unknown`, and `user` tables
+Set the project up exactly like this — Flask expects `templates/` and
+`static/` as siblings of `app.py`:
 
-## 2. Get the code
-
-```bash
-git clone <your-repo-url>
-cd <your-repo-folder>
+```
+domain-dashboard/                  <- project root
+├── app.py
+├── requirements.txt
+├── .env.example
+├── instance/
+│   └── site.db                    <- created automatically on first run
+├── templates/
+│   ├── base.html
+│   ├── login.html
+│   ├── register.html
+│   └── dashboard.html
+└── static/
+    ├── css/
+    │   └── dashboard.css
+    └── js/
+        └── dashboard.js
 ```
 
-Place `pipeline.py` at the root of your IT repo (or wherever you keep pipeline
-scripts).
+## 1. Get the files into place
 
-## 3. Install dependencies
+```bash
+mkdir -p domain-dashboard/{templates,static/css,static/js,instance}
+cd domain-dashboard
+```
+
+Copy each file from this response into the matching path shown above:
+- `app.py` → project root
+- `base.html`, `login.html`, `register.html`, `dashboard.html` → `templates/`
+- `dashboard.css` → `static/css/`
+- `dashboard.js` → `static/js/`
+- `requirements.txt`, `.env.example` → project root
+
+## 2. Install dependencies
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 
-pip install pandas requests tldextract trafilatura jsonschema llama-cpp-python python-crontab
+pip install -r requirements.txt
 ```
 
-If you're on GPU and want CUDA-accelerated inference, install `llama-cpp-python`
-with CUDA support instead of the plain wheel:
+`GitPython` is listed but only actually required once you turn Git push on
+(step 5) — installing it up front is harmless either way.
+
+## 3. Configure environment variables
 
 ```bash
-CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+cp .env.example .env
 ```
 
-## 4. Download the model
+Edit `.env` (or just `export` these in your shell) and set at least
+`SECRET_KEY` to something random for anything beyond local testing. Leave
+`GIT_ENABLED=false` for now — that's the point of this setup, you can turn it
+on later.
 
-Download `Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` and place it at:
+If you're using something like `python-dotenv` to auto-load `.env`, add:
 
+```bash
+pip install python-dotenv
 ```
-<repo-folder>/models-gguf/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
+
+and at the top of `app.py`:
+
+```python
+from dotenv import load_dotenv
+load_dotenv()
 ```
 
-Or point `MODEL_GGUF` at wherever you've stored it (see step 6).
+Otherwise just `export` the variables manually before running, e.g.:
 
-## 5. Set up the database
+```bash
+export SECRET_KEY="something-random"
+export GIT_ENABLED=false
+```
 
-The pipeline expects `instance/site.db` to already exist with the required
-tables. If you don't have it yet, run your Flask app once to create it:
+## 4. Run it
 
 ```bash
 python app.py
 ```
 
-## 6. Configure environment variables
+This creates `instance/site.db` automatically on first run (via
+`db.create_all()`) and starts the server on `http://0.0.0.0:5003`.
 
-All configuration is via environment variables (all optional — sane defaults are
-built in). The important one for this setup is `INPUT_DIR`:
+Open `http://localhost:5003`, register an account, log in, and you'll land on
+the dashboard. It'll be empty until domains exist in the `dom` table — that's
+what your classification pipeline populates.
 
-| Variable | Default | Description |
-|---|---|---|
-| `INPUT_DIR` | `/mnt/input` | Folder to read daily CSVs from. **Set this to wherever your CSVs land.** |
-| `FILTER_BY_DATE` | `true` | If `true`, only picks up files whose name contains yesterday's date (`YYYY-MM-DD`). Set to `false` to pick up every `.csv` in the folder regardless of name. |
-| `MOVE_PROCESSED_FILES` | `true` | If `true`, matched CSVs are moved out of `INPUT_DIR` into `downloads/` after being read, so they aren't reprocessed tomorrow. Set to `false` to leave the source folder untouched (files are copied instead). |
-| `DEVICE` | `gpu` | `gpu` or `cpu` |
-| `N_GPU_LAYERS` | `-1` (all layers on GPU) | Set `0` to force CPU-only inference |
-| `MODEL_GGUF` | `models-gguf/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` | Path to the GGUF model file |
-| `MAX_DOMAINS_PER_DAY` | `100` | Cap on how many new domains are classified per run |
-| `MAX_WORKERS` | `6` | Parallel HTTP fetch threads |
-| `BATCH_SIZE` | `20` | Domains processed per batch |
-| `HTTP_TIMEOUT` | `15` | Seconds before an HTTP request times out |
-| `HTTP_RETRIES` | `3` | Retries per URL variant on timeout |
-| `USE_CACHE` | `true` | Cache fetched HTML to avoid re-downloading on reruns |
-| `CRON_HOUR` / `CRON_MINUTE` | `2` / `40` | Daily cron schedule (used by `install`) |
+## 5. Enable Git push later (optional)
 
-Example:
+When you're ready:
 
-```bash
-export INPUT_DIR=/data/exports/uncategorized
-export DEVICE=gpu
-export MAX_DOMAINS_PER_DAY=150
-```
+1. Clone your domains repo locally, with a `categories/` folder inside it
+   containing one plain-text file per category name (matching the
+   `CATEGORIES` list in `app.py` exactly), e.g.:
+   ```
+   domaindb/
+   └── categories/
+       ├── Adult Content
+       ├── Advertisement
+       ├── Banking and Finance
+       └── ... (one file per category)
+   ```
+2. Set:
+   ```bash
+   export GIT_ENABLED=true
+   export GIT_REPO_PATH=/path/to/domaindb
+   ```
+3. Make sure `git` credentials/SSH keys are set up for that clone to `pull`
+   and `push` without a prompt (the app calls `origin.pull()` and
+   `origin.push()` non-interactively).
+4. Restart the app. The "Push to Git" button on the dashboard will now work;
+   until then it returns a friendly error instead of failing.
 
-(On Windows PowerShell: `$env:INPUT_DIR = "D:\exports\uncategorized"`)
+## Notes / things worth knowing
 
-## 7. Run it
-
-```bash
-python pipeline.py run
-```
-
-What happens, step by step:
-
-1. **Local File Intake** — scans `INPUT_DIR` for CSVs (filtered by yesterday's date
-   unless `FILTER_BY_DATE=false`), and moves/copies matches into `downloads/`.
-2. **Merge & Filter** — combines all matched CSVs, keeps only rows where
-   `category == "uncategorized"`, cleans and deduplicates the domains, and writes
-   `output/to_scrape_today.csv`.
-3. **Filter Already Processed** — drops domains already present in the `dom` table,
-   caps the remainder at `MAX_DOMAINS_PER_DAY`, and writes `output/new_domains.csv`.
-4. **Classification** — for each domain: fetches the homepage (falling back through
-   parent subdomains if the exact host doesn't respond), extracts readable text,
-   runs it through the local LLM with a strict JSON-schema grammar plus a
-   keyword-heuristic pass, and inserts the result into `site.db` (`dom` table on
-   success, `unknown` table on failure).
-
-Logs are written to `logs/pipeline_YYYYMMDD.log` and echoed to the console.
-
-## 8. Automate it (optional)
-
-Install a daily cron job (Linux/macOS):
-
-```bash
-python pipeline.py install     # installs at CRON_HOUR:CRON_MINUTE (default 02:40)
-python pipeline.py list        # view installed jobs
-python pipeline.py uninstall   # remove it
-```
-
-On Windows, use Task Scheduler to run `python pipeline.py run` on your preferred
-schedule instead — `install`/`uninstall`/`list` rely on `python-crontab`, which is
-Linux/macOS-only.
-
-## 9. Check status anytime
-
-```bash
-python pipeline.py status
-```
-
-Shows current config, folder/model/DB health, domains tracked so far, and any
-installed cron job.
-
-## 10. Folder layout after first run
-
-```
-<repo-folder>/
-├── pipeline.py
-├── models-gguf/
-│   └── Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
-├── instance/
-│   └── site.db
-├── downloads/        # CSVs pulled in from INPUT_DIR
-├── output/           # to_scrape_today.csv, new_domains.csv
-├── logs/             # daily run logs
-└── cache/            # cached homepage fetches (if USE_CACHE=true)
-```
-
-## Troubleshooting
-
-- **"Database not found"** — run your Flask app (`python app.py`) once first to
-  create `instance/site.db`.
-- **"Model file not found"** — check `MODEL_GGUF` points to the actual `.gguf`
-  path, or place the model in `models-gguf/`.
-- **"Input folder does not exist"** — check `INPUT_DIR` is set and reachable
-  (e.g. a network share is actually mounted).
-- **No matching CSV files found** — if `FILTER_BY_DATE=true`, confirm the CSV
-  filenames actually contain yesterday's date in `YYYY-MM-DD` format; otherwise
-  set `FILTER_BY_DATE=false` to pick up all CSVs regardless of name.
-- **CUDA not found** warning — either install a CUDA-enabled `llama-cpp-python`
-  build, or set `DEVICE=cpu` / `N_GPU_LAYERS=0` to run on CPU.
+- **Password hashing changed the storage format.** If you already have a
+  `site.db` with users registered under the old plain-text scheme, their
+  stored password won't match the new hash check and they won't be able to
+  log in. Simplest fix: delete `instance/site.db` and re-register, or write a
+  one-off script to rehash existing rows with `generate_password_hash`.
+- `SECRET_KEY` defaults to `"secret_key"` if unset — fine for local testing,
+  but set a real random value before exposing this anywhere beyond localhost.
+- The app binds to `0.0.0.0:5003` by default (`app.run(host="0.0.0.0",
+  port=5003)`) — change the `port=` value in `app.py` if that conflicts with
+  something else on your machine.
