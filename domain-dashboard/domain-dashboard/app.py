@@ -21,6 +21,7 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "secret_key")
 
 default_db_path = os.path.join(app.root_path, "instance", "site.db")
+os.makedirs(os.path.dirname(default_db_path), exist_ok=True)  # SQLite won't create this folder itself
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{default_db_path}")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
