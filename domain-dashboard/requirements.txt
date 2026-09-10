@@ -1,0 +1,9 @@
+Flask
+Flask-SQLAlchemy
+Flask-Login
+Flask-WTF
+WTForms
+Werkzeug
+
+# Optional — only needed if you enable Git push (GIT_ENABLED=true)
+GitPython

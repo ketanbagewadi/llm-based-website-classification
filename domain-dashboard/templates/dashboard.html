@@ -1,0 +1,320 @@
+{% extends 'base.html' %}
+{% block title %}
+  Dashboard
+{% endblock %}
+
+{% block extra_css %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+{% endblock %}
+
+{% block content %}
+  <div class="sticky-header">
+    <div class="header-top">
+      <h2>Dashboard</h2>
+      <div class="user-info">
+        Welcome, {{ name }}
+        <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+      </div>
+    </div>
+
+    <div class="header-content">
+      <div class="stats-compact">
+        <div class="stat-item">
+          <span class="stat-label">Total</span>
+          <span class="stat-value">{{ total_domains }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Verified</span>
+          <span class="stat-value">{{ verified_count }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Pushed</span>
+          <span class="stat-value">{{ pushed_count }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Pending</span>
+          <span class="stat-value" id="pending-count">{{ pending_doms|length }}</span>
+        </div>
+        <div class="stat-item" id="changes-stat" style="display: none;">
+          <span class="stat-label">Changes</span>
+          <span class="stat-value" id="changes-count">0</span>
+        </div>
+      </div>
+
+      <div class="action-buttons">
+        <button class="btn-add" onclick="openModal('addDomainModal')">+ Add Domain</button>
+        <button class="btn-apply" onclick="showApplyModal()" id="apply-btn">Apply Changes <span id="btn-count"></span></button>
+        <button class="btn-push" onclick="showPushModal()">Push to Git</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container-main">
+    {% with messages=get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px;">
+        <h3 style="margin: 0;">Domains Pending Verification</h3>
+        <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+          <div class="pagination-info" id="pagination-info">
+            Showing <span id="showing-start">0</span>-<span id="showing-end">0</span> of <span id="total-items">0</span>
+          </div>
+          <button class="btn-filter" id="verified-filter-btn" onclick="toggleVerifiedFilter()">Show Verified Only</button>
+          <div class="search-container-inline">
+            <input type="text" id="search-input" placeholder="Search by category or status..." class="search-input-inline" />
+          </div>
+        </div>
+      </div>
+
+      {% if pending_doms %}
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 40px;">#</th>
+                <th style="width: 30%;">Domain</th>
+                <th style="width: 22%;">Current Category (by LLM)</th>
+                <th style="width: 30%;">Verification</th>
+                <th style="width: 150px;">Status</th>
+              </tr>
+            </thead>
+            <tbody id="table-body">
+              {% for dom in pending_doms %}
+                <tr id="row_{{ dom.id }}"
+                  class="data-row"
+                  data-initial-verified="{% if dom.verified %}
+                    
+                    true
+
+                  {% else %}
+                    
+                    false
+
+                  {% endif %}"
+                  data-initial-category="{{ dom.category or 'Unknown' }}"
+                  data-git-push="{{ dom.git_push }}">
+                  <td>{{ loop.index }}</td>
+                  <td class="domain-cell">
+                    <a id="domain_link_{{ dom.id }}" href="https://{{ dom.domains }}" target="_blank" rel="noopener noreferrer">{{ dom.domains }}</a>
+                    <button class="btn-edit" onclick="openEditDomainModal({{ dom.id }}, '{{ dom.domains }}')">✎</button>
+                  </td>
+                  <td class="category-cell" id="current_category_{{ dom.id }}">{{ dom.category or 'Unknown' }}</td>
+                  <td>
+                    <div class="verification-buttons">
+                      <button class="btn-correct {% if dom.verified %}active{% endif %}" onclick="handleButtonClick({{ dom.id }}, 'correct')" id="correct_btn_{{ dom.id }}">✓ Correct</button>
+                      <button class="btn-wrong" onclick="handleButtonClick({{ dom.id }}, 'wrong')" id="wrong_btn_{{ dom.id }}">✗ Wrong</button>
+                      <button class="btn-delete" onclick="handleButtonClick({{ dom.id }}, 'delete')" id="delete_btn_{{ dom.id }}">🗑️ Delete</button>
+                    </div>
+                  </td>
+                  <td>
+                    <div id="status_{{ dom.id }}" class="status-cell">
+                      {% if dom.verified %}
+                        <span class="status-verified">Verified</span>
+                      {% else %}
+                        <span class="status-pending">Pending</span>
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pagination-controls" id="pagination-controls">
+          <button class="pagination-btn" id="prev-btn" onclick="changePage(-1)">← Previous</button>
+          <div class="page-numbers" id="page-numbers"></div>
+          <button class="pagination-btn" id="next-btn" onclick="changePage(1)">Next →</button>
+        </div>
+      {% else %}
+        <p>No pending domains 🎉 All caught up!</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ===================== ADD DOMAIN MODAL ===================== -->
+  <div id="addDomainModal" class="modal">
+    <div class="modal-content" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3>➕ Add New Domain</h3>
+        <span class="modal-close" onclick="closeModal('addDomainModal')">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div class="add-domain-form">
+          <!-- Domain input -->
+          <div class="form-group">
+            <label class="form-label">Domain Name <span style="color:#dc3545;">*</span></label>
+            <input type="text" id="add-domain-input" class="modal-search" placeholder="e.g. example.com" style="margin-bottom: 0;" />
+            <div id="add-domain-error" class="field-error" style="display:none;"></div>
+          </div>
+
+          <!-- Category selector -->
+          <div class="form-group" style="margin-top: 16px;">
+            <label class="form-label">Category <span style="color:#dc3545;">*</span></label>
+            <input type="text" id="add-category-search" class="modal-search" placeholder="Search categories..." style="margin-bottom: 8px;" />
+            <div class="category-list" id="add-category-list" style="max-height: 220px;">
+              {% for cat in categories %}
+                <div class="category-item add-cat-item" data-value="{{ cat }}" onclick="selectAddCategory('{{ cat }}')">{{ cat }}</div>
+              {% endfor %}
+            </div>
+            <div id="add-selected-category" class="selected-category-badge" style="display:none;"></div>
+            <div id="add-category-error" class="field-error" style="display:none;"></div>
+          </div>
+        </div>
+
+        <div class="modal-footer" style="margin-top: 20px;">
+          <button class="btn-modal-confirm" onclick="confirmAddDomain()" id="add-domain-confirm-btn">Add Domain</button>
+          <button class="btn-modal-cancel" onclick="closeModal('addDomainModal')">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Domain Success Modal -->
+  <div id="addDomainSuccessModal" class="modal">
+    <div class="modal-content" style="max-width: 420px;">
+      <div class="modal-header">
+        <h3 style="color: #28a745;">✓ Domain Added</h3>
+        <span class="modal-close" onclick="closeAddSuccessModal()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div id="add-success-content" style="text-align: center; padding: 10px 0 20px;"></div>
+        <div class="modal-footer" style="margin-top: 10px; justify-content: center; gap: 12px;">
+          <button class="btn-modal-confirm" onclick="closeAddSuccessModal()">Add Another</button>
+          <button class="btn-modal-cancel" onclick="closeAddSuccessAndReload()">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Category Selection Modal (no longer has Delete button) -->
+  <div id="categoryModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Select Category</h3>
+        <span class="modal-close" onclick="closeModal('categoryModal')">&times;</span>
+      </div>
+      <div class="modal-body">
+        <input type="text" id="modalSearch" placeholder="Search categories..." class="modal-search" />
+        <div class="category-list" id="categoryList">
+          {% for cat in categories %}
+            <div class="category-item" onclick="selectCategory('{{ cat }}')">{{ cat }}</div>
+          {% endfor %}
+        </div>
+        <div class="modal-footer">
+          <button class="btn-modal-cancel" onclick="closeModal('categoryModal')">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Domain Edit Modal -->
+  <div id="editDomainModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Edit Domain</h3>
+        <span class="modal-close" onclick="closeModal('editDomainModal')">&times;</span>
+      </div>
+      <div class="modal-body">
+        <input type="text" id="edit-domain-input" class="modal-search" placeholder="Enter new domain..." />
+        <div class="modal-footer" style="margin-top: 20px;">
+          <button class="btn-modal-confirm" onclick="confirmEditDomain()">Save</button>
+          <button class="btn-modal-cancel" onclick="closeModal('editDomainModal')">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply Changes Confirmation Modal -->
+  <div id="applyModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Confirm Changes</h3>
+        <span class="modal-close" onclick="closeModal('applyModal')">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div id="apply-summary" class="change-summary"></div>
+        <div class="modal-footer" style="margin-top: 20px;">
+          <button class="btn-modal-confirm" onclick="confirmApplyChanges()">Confirm & Apply</button>
+          <button class="btn-modal-cancel" onclick="closeModal('applyModal')">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply Success Modal -->
+  <div id="applySuccessModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="color: #28a745;">✓ Changes Applied</h3>
+        <span class="modal-close" onclick="closeModal('applySuccessModal')">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div id="apply-success-content" style="text-align: center; padding: 20px 0;"></div>
+        <div class="modal-footer" style="margin-top: 20px;">
+          <button class="btn-modal-confirm" onclick="closeSuccessAndReload()">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Git Push Confirmation Modal -->
+  <div id="pushModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Confirm Git Push</h3>
+        <span class="modal-close" onclick="closeModal('pushModal')">&times;</span>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom: 20px; font-size: 14px; color: #666;">This will push all verified domains to the Git repository. Are you sure you want to continue?</p>
+        <div class="modal-footer">
+          <button class="btn-modal-confirm" onclick="confirmGitPush()">Confirm & Push</button>
+          <button class="btn-modal-cancel" onclick="closeModal('pushModal')">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Git Push Progress Modal -->
+  <div id="pushProgressModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Git Push Progress</h3>
+      </div>
+      <div class="modal-body">
+        <div id="push-progress-content">
+          <div class="progress-spinner"></div>
+          <p style="text-align: center; margin-top: 20px; color: #666;">Pushing to Git repository...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Git Push Result Modal -->
+  <div id="pushResultModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="result-modal-title">Push Result</h3>
+        <span class="modal-close" onclick="closeModal('pushResultModal')">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div id="push-result-content"></div>
+        <div class="modal-footer" style="margin-top: 20px;">
+          <button class="btn-modal-confirm" onclick="closeResultAndReload()">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <script>
+    window.APP_URLS = {
+      pushToGit: "{{ url_for('push_to_git') }}"
+    };
+  </script>
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}
